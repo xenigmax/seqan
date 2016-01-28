@@ -1294,8 +1294,8 @@ inline void _inferComplexBP(String<TBreakpoint> & globalBreakpoints, TBreakpoint
         // If one includes the other, we keep the inner inversion and infer an deletion of the remaining region.
         // If both overlap, then the overlapping region is the inversion, the remaining regions are inferred dels.
         // In this case, we need to create a third bp
-        else if (_invDelClassification(bp, tempBP, newInvBP, bpPosRange))
-            newInv = true;
+        //else if (_invDelClassification(bp, tempBP, newInvBP, bpPosRange)) // excluded for testing
+        //    newInv = true;
 
     }
     // Erase obsolete bps in descending order
