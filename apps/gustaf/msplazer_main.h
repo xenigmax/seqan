@@ -129,6 +129,15 @@ int msplazer(StellarOptions & stellarOptions, MSplazerOptions & msplazerOptions)
     String<TScoreAlloc> distanceScores;
     resize(distanceScores, length(stellarMatches));
 
+
+    // TODO (ktrappe) - a message from kjk
+    // There are bugs in multithread mode. 
+    // The result is not exactly same with "-nth -1".
+    // Probably you know this situation. -eg. file reading.
+    // So I disabled this for testing.
+     unsigned int nth = msplazerOptions.numThreads;
+     msplazerOptions.numThreads = 1;
+ 
     // get Stellar matches
     bool doStellar = true;
     if (msplazerOptions.stellarInputFile != "")
@@ -152,7 +161,7 @@ int msplazer(StellarOptions & stellarOptions, MSplazerOptions & msplazerOptions)
         double startST = sysTime();
         // TODO (ktrappe) distinguish call with queryIDs and shortQueryIDs in case of mate pairs? stellar writes out short
         // query IDs anyway...
-        if (!_getStellarMatchesFromFile(queries, shortQueryIDs, databases, databaseIDs, msplazerOptions.stellarInputFile,
+       if (!_getStellarMatchesFromFile(queries, shortQueryIDs, databases, databaseIDs, msplazerOptions.stellarInputFile,
                                         stellarMatches, msplazerOptions.numThreads))
             return 1;
 
@@ -223,34 +232,92 @@ int msplazer(StellarOptions & stellarOptions, MSplazerOptions & msplazerOptions)
     typedef MSplazerChain<TGraph, TVertexDescriptor, TScoreAlloc, TSparsePropertyMap, TMatchAlloc> TMSplazerChain;
     String<TMSplazerChain> queryChains;
 
+    
+    typedef Breakpoint<TSequence, TId> TBreakpoint;
+    String<TBreakpoint> globalRawBreakpoints;
+    String<TBreakpoint> globalBreakpoints;
+
+    // Run on parallel - minimally refactored, just for showing performance.
+    omp_set_num_threads(nth);
+    unsigned int jobSize = ceil(length(stellarMatches)/nth);
+
+    String<String<TBreakpoint> > separatedBreakpoints;
+    String<String<TBreakpoint> > separatedBreakends;
+    resize(separatedBreakpoints, nth);
+    resize(separatedBreakends, nth);
+
+    std::cout << "Try... " << std::endl;
+    double startGraphs = sysTime();
+
+    for (unsigned int i = 0; i < nth; ++i)
+    {
+        unsigned int startPos = i * jobSize;
+        unsigned int endPos = i + (i+1)*jobSize;
+
+        _analyze(stellarMatches, distanceScores, queryChains, queryIDs, queries, readJoinPositions, msplazerOptions, separatedBreakpoints[i], separatedBreakends[i], startPos, endPos);
+    }
+    omp_set_num_threads(msplazerOptions.numThreads); //disable again (msplazerOptions.numThreads=1)
+
+    // merge breakpoints
+    for (unsigned int i = 0; i < nth; ++i)
+    {
+        append(globalRawBreakpoints, separatedBreakpoints[i]);
+        std::cout<< i << ":" << length(separatedBreakpoints[i]) << std::endl;
+    }
+    std::cout<< "merged global breakpoints (raw) :" << length(globalRawBreakpoints) << std::endl;
+
+    // refine breakpoints
+    unsigned int similarBPId = 0;
+    for (unsigned int i = 0; i < length(globalRawBreakpoints); ++i)
+    {
+        if (globalRawBreakpoints[i].support >= msplazerOptions.support)
+        {
+            if (msplazerOptions.inferComplexBP)
+                _inferComplexBP(globalBreakpoints, globalRawBreakpoints[i], msplazerOptions.breakpointPosRange, similarBPId);
+            else
+                appendValue(globalBreakpoints, globalRawBreakpoints[i]);
+        }
+    }
+    std::cout<< "merged global breakpoints (refined) :" << length(globalBreakpoints) << std::endl;
+
+    // merge breakends
+    for (unsigned int i = 0; i < nth; ++i)
+    {
+        append(globalBreakpoints, separatedBreakends[i]);
+        std::cout<< i << ":" << length(separatedBreakends[i]) << std::endl;
+    }
+    std::cout<< "merged global breakpoints (merged) :" << length(globalBreakpoints) << std::endl;
+    std::cout << "...done... " << (sysTime() - startGraphs) << "s"  << std::endl;
+
+    /* 
     std::cout << "Constructing graphs... ";
     // TODO distinguish call with queryIDs and shortQueryIDs for mate pairs?
     double startGraphs = sysTime();
     std::cout << "Building graphs... ";
-    _chainQueryMatches(stellarMatches, distanceScores, queryChains, queryIDs, queries, readJoinPositions, msplazerOptions);
+    //_chainQueryMatches(stellarMatches, distanceScores, queryChains, queryIDs, queries, readJoinPositions, msplazerOptions);
     std::cout << "...done... " << (sysTime() - startGraphs) << "s"  << std::endl;
+    */
 
     // ///////////////////////////////////////////////////////////////////////
     // Analyze chains
 
     double startAnalysis = sysTime();
     std::cout << "Analyzing graphs... ";
-    _analyzeChains(queryChains);
+    //_analyzeChains(queryChains);
     std::cout << "...done... " << (sysTime() - startAnalysis) << "s" << std::endl;
 
     // ///////////////////////////////////////////////////////////////////////
     // Breakpoints
 
-    typedef Breakpoint<TSequence, TId> TBreakpoint;
-    String<TBreakpoint> globalBreakpoints;
     // String<TBreakpoint> globalStellarIndels;
     double startBP = sysTime();
     std::cout << "Extracting breakpoints... ";
-    _findAllBestChains(queryChains, stellarMatches, globalBreakpoints, msplazerOptions);
+    //_findAllBestChains(queryChains, stellarMatches, globalBreakpoints, msplazerOptions);
     std::cout << "...done... " << (sysTime() - startBP) << "s" << std::endl;
     // _findAllBestChains(queryChains, stellarMatches, queries, queryIDs, globalBreakpoints, globalStellarIndels, msplazerOptions);
     // _findAllChains(queryChains, stellarMatches, queries, queryIDs, globalBreakpoints, globalStellarIndels, msplazerOptions);
     // _findAllChains(queryChains);
+    
 
     // Graph statistics output
     /*

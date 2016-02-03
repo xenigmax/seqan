@@ -822,10 +822,10 @@ void _analyze(StringSet<QueryMatches<StellarMatch<TSequence, TId> > > & stellarM
                         String<unsigned> & readJoinPositions,
                         MSplazerOptions const & msplazerOptions,
                         String<TBreakpoint> & globalBreakpoints,
+                        String<TBreakpoint> & globalBreakends,
                         unsigned int startIndex,
                         unsigned int endIndex)
 {
-    String<TBreakpoint> globalBreakends;
     String<TBreakpoint> tmpGlobalBreakpoints;
     unsigned brokenChainCount = 0;
     unsigned similarBPId = 0;
@@ -900,11 +900,16 @@ void _analyze(StringSet<QueryMatches<StellarMatch<TSequence, TId> > > & stellarM
             if (_findBestChain(chain, stellarMatches[i].matches, localBreakpoints, // msplazerOptions,
                                brokenChainCount))
             {
-                _insertBreakpoints(tmpGlobalBreakpoints, globalBreakends, localBreakpoints, msplazerOptions, similarBPId);
+                //_insertBreakpoints(tmpGlobalBreakpoints, globalBreakends, localBreakpoints, msplazerOptions, similarBPId);
+                _insertBreakpoints(globalBreakpoints, globalBreakends, localBreakpoints, msplazerOptions, similarBPId);
             }
         }
     }
+    //append(globalBreakpoints, globalBreakends);
+}
 
+/*
+{
     // 2nd pass scanning:
     // Only keep BPs w/ enough support and check if these can be combined to more complex ones
     for (unsigned i = 0; i < length(tmpGlobalBreakpoints); ++i)
@@ -919,7 +924,7 @@ void _analyze(StringSet<QueryMatches<StellarMatch<TSequence, TId> > > & stellarM
     }
     append(globalBreakpoints, globalBreakends);
 }
-
+*/
 
 
 // Chain all matches of each query
