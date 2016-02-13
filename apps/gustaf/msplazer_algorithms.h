@@ -811,10 +811,102 @@ void _chainMatchesReference(QueryMatches<StellarMatch<TSequence, TId> > & queryM
     }
 }
 
-
 // Chain all matches of each query
 template <typename TSequence, typename TId, typename TScoreAlloc, typename TMSplazerChain, typename TBreakpoint>
 void _analyze(StringSet<QueryMatches<StellarMatch<TSequence, TId> > > & stellarMatches,
+                        String<TScoreAlloc> & distanceScores,
+                        String<TMSplazerChain> & queryChains,
+                        StringSet<TId> & queryIds,
+                        StringSet<TSequence> & queries,
+                        String<unsigned> & readJoinPositions,
+                        MSplazerOptions const & msplazerOptions,
+                        String<TBreakpoint> & globalBreakpoints,
+                        String<TBreakpoint> & globalBreakends,
+                        unsigned int startIndex,
+                        unsigned int endIndex)
+{
+    String<TBreakpoint> tmpGlobalBreakpoints;
+    unsigned brokenChainCount = 0;
+    unsigned similarBPId = 0;
+
+    if (startIndex < 0)
+        startIndex = 0;
+
+    if (endIndex > length(stellarMatches))
+        endIndex = length(stellarMatches);
+
+    //std::cout << startIndex << " ~ " << endIndex << std::endl;
+
+    for (unsigned i = startIndex; i < endIndex; ++i)
+    {
+        TScoreAlloc matchDistanceScores = distanceScores[i];
+        TMSplazerChain chain(matchDistanceScores);
+        if (msplazerOptions.pairedEndMode)
+            chain.mateJoinPosition = readJoinPositions[i];
+        // TMSplazerChain chain(matchDistanceScores, readJoinPositions[i]);
+
+        if (length(stellarMatches[i].matches) == 0)
+        {
+            // Insert single match into graph, no extra edges beside from start and to end
+            chain.isEmpty = true;
+        }
+        else
+        {
+            // Graph init
+            if (msplazerOptions.pairedEndMode)
+                _initialiseGraphMatePairs(stellarMatches[i], queryIds[i], chain, msplazerOptions);
+            else
+                //_initialiseGraphNoBreakend(stellarMatches[i], chain, msplazerOptions);
+                _initialiseGraph(stellarMatches[i], queryIds[i], chain, msplazerOptions);
+
+            // Chain compatible matches
+            _chainMatches(stellarMatches[i],
+                          queryIds[i],
+                          queries[i],
+                          chain.graph,
+                          chain.matchDistanceScores,
+                          chain.breakpoints,
+                          chain,
+                          msplazerOptions);
+            // Chain matches comptable according to reference
+            _chainMatchesReference(stellarMatches[i],
+                                   queryIds[i],
+                                   queries[i],
+                                   chain.graph,
+                                   chain.matchDistanceScores,
+                                   chain.breakpoints,
+                                   chain,
+                                   msplazerOptions);
+
+            // Analyze chains in read graph by calling DAG shortest path algorithm
+            //_analyzeChains(queryChains);
+            InternalPropertyMap<int> weightMap;
+            if (!chain.isEmpty)
+            {
+                resizeVertexMap(chain.distMap, chain.graph);
+                dagShortestPath(chain.predMap,
+                                chain.distMap,
+                                chain.graph,
+                                chain.startVertex,
+                                weightMap);
+            }
+
+            // Finding the best chain (belonging to the shortest path) and reporting the breakpoints, if any.
+            // 1st pass scanning:
+            String<TBreakpoint> localBreakpoints;
+            if (_findBestChain(chain, stellarMatches[i].matches, localBreakpoints, // msplazerOptions,
+                               brokenChainCount))
+            {
+                append(globalBreakpoints, localBreakpoints);
+            }
+        }
+    }
+}
+
+
+// Chain all matches of each query
+template <typename TSequence, typename TId, typename TScoreAlloc, typename TMSplazerChain, typename TBreakpoint>
+void _analyze2(StringSet<QueryMatches<StellarMatch<TSequence, TId> > > & stellarMatches,
                         String<TScoreAlloc> & distanceScores,
                         String<TMSplazerChain> & queryChains,
                         StringSet<TId> & queryIds,
@@ -1313,6 +1405,9 @@ inline bool _invDelClassification(TBreakpoint & bp, TBreakpoint & tempBP, TBreak
     return newInv;
 }
 
+/*
+_insertBreakpoints(globalBreakpoints, globalBreakends, localBreakpoints     , msplazerOptions, similarBPId);
+*/
 template <typename TBreakpoint>
 inline bool _insertBreakend(String<TBreakpoint> & countedBE, TBreakpoint & be, unsigned const & bpPosRange)
 {

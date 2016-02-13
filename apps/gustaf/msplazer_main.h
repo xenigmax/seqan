@@ -48,6 +48,45 @@
 using namespace seqan;
 
 // /////////////////////////////////////////////////////////////////////////////
+// For benchmark
+void process_mem_usage(double& vm_usage, double& resident_set)
+{
+    using std::ios_base;
+    using std::ifstream;
+    using std::string;
+
+    vm_usage     = 0.0;
+    resident_set = 0.0;
+
+    // 'file' stat seems to give the most reliable results
+    //
+    ifstream stat_stream("/proc/self/stat",ios_base::in);
+
+    // dummy vars for leading entries in stat that we don't care about
+    //
+    string pid, comm, state, ppid, pgrp, session, tty_nr;
+    string tpgid, flags, minflt, cminflt, majflt, cmajflt;
+    string utime, stime, cutime, cstime, priority, nice;
+    string O, itrealvalue, starttime;
+
+    // the two fields we want
+    //
+    unsigned long vsize;
+    long rss;
+
+    stat_stream >> pid >> comm >> state >> ppid >> pgrp >> session >> tty_nr
+                >> tpgid >> flags >> minflt >> cminflt >> majflt >> cmajflt
+                >> utime >> stime >> cutime >> cstime >> priority >> nice
+                >> O >> itrealvalue >> starttime >> vsize >> rss; // don't care about the rest
+
+    stat_stream.close();
+
+    long page_size_kb = sysconf(_SC_PAGE_SIZE) / 1024; // in case x86-64 is configured to use 2MB pages
+    vm_usage     = vsize / 1024.0;
+    resident_set = rss * page_size_kb;
+}
+
+// /////////////////////////////////////////////////////////////////////////////
 // MSplazer Wrapper
 int msplazer(StellarOptions & stellarOptions, MSplazerOptions & msplazerOptions)
 {
@@ -168,6 +207,9 @@ int msplazer(StellarOptions & stellarOptions, MSplazerOptions & msplazerOptions)
         std::cout << "done" << std::endl;
         std::cout << "TIME importing stellar matches " <<   (sysTime() - startST) << "s" << std::endl;
     }
+    double vm, rss;
+    process_mem_usage(vm, rss);
+    std::cout << "Memory usage (after input file loading) : " << vm << "," << rss << std::endl;
     /*
     for(unsigned i = 0; i < length(queries); ++i){
         for(unsigned j = 0; j < length(stellarMatches[i].matches); ++j)
@@ -179,41 +221,6 @@ int msplazer(StellarOptions & stellarOptions, MSplazerOptions & msplazerOptions)
     _getMatchDistanceScore(stellarMatches, distanceScores, msplazerOptions.numThreads);
     std::cout << "TIME getting match distance " <<   (sysTime() - startDist) << "s" << std::endl;
 
-
-    // Graph statistics
-    /*
-    unsigned maxSize = 0;
-    for(unsigned i = 0; i < length(queries); ++i){
-        maxSize = std::max(static_cast<unsigned>(length(stellarMatches[i].matches)), maxSize);
-        for(unsigned j = 0; j < length(stellarMatches[i].matches); ++j)
-            std::cout << stellarMatches[i].matches[j] << std::endl;
-    }
-    String<unsigned> sizeCount;
-    String<unsigned> chainCount;
-    String<unsigned> partialChainCount;
-    resize(sizeCount, maxSize+1);
-    resize(chainCount, maxSize+1);
-    resize(partialChainCount, maxSize+1);
-    for(unsigned i = 0; i < length(sizeCount); ++i){
-        sizeCount[i] = 0;
-        chainCount[i] = 0;
-        partialChainCount[i] = 0;
-    }
-    for(unsigned i = 0; i < length(queries); ++i){
-        ++sizeCount[length(stellarMatches[i].matches)];
-    }
-    for(unsigned i = 0; i < length(sizeCount); ++ i){
-        std::cout << "Number of occurences for matches " << i << " : " << sizeCount[i] << std::endl;
-    }
-    for(unsigned i = 0; i < length(distanceScores); ++i){
-        TScoreAlloc scores = distanceScores[i];
-        std::cerr << "read score: " << i << std::endl;
-        for(unsigned j = 0; j < length(scores); ++j){
-            std::cerr << "score: " << scores[j] << std::endl;
-        }
-        std::cerr << std::endl;
-    }
-    */
 
     // ///////////////////////////////////////////////////////////////////////
     // Create chains/graphs for all queries using Stellar matches
@@ -236,6 +243,7 @@ int msplazer(StellarOptions & stellarOptions, MSplazerOptions & msplazerOptions)
     typedef Breakpoint<TSequence, TId> TBreakpoint;
     String<TBreakpoint> globalRawBreakpoints;
     String<TBreakpoint> globalBreakpoints;
+    String<TBreakpoint> globalBreakends;
 
     // Run on parallel - minimally refactored, just for showing performance.
     omp_set_num_threads(nth);
@@ -246,9 +254,9 @@ int msplazer(StellarOptions & stellarOptions, MSplazerOptions & msplazerOptions)
     resize(separatedBreakpoints, nth);
     resize(separatedBreakends, nth);
 
-    std::cout << "Try... " << std::endl;
-    double startGraphs = sysTime();
-
+    std::cout << "Analyze with " << nth << " Threads : Start" << std::endl;
+    double startTime = sysTime();
+    SEQAN_OMP_PRAGMA(parallel for)
     for (unsigned int i = 0; i < nth; ++i)
     {
         unsigned int startPos = i * jobSize;
@@ -257,17 +265,23 @@ int msplazer(StellarOptions & stellarOptions, MSplazerOptions & msplazerOptions)
         _analyze(stellarMatches, distanceScores, queryChains, queryIDs, queries, readJoinPositions, msplazerOptions, separatedBreakpoints[i], separatedBreakends[i], startPos, endPos);
     }
     omp_set_num_threads(msplazerOptions.numThreads); //disable again (msplazerOptions.numThreads=1)
+    std::cout << "Analyze with " << nth << " Threads : End(" << (sysTime() - startTime) << "s)" << std::endl;
 
+    process_mem_usage(vm, rss);
+    std::cout << "Memory usage (before postprocessing) : " << vm << "," << rss << std::endl;
+
+    std::cout << "Postprocessing : Start" << std::endl;
     // merge breakpoints
+    unsigned int similarBPId = 0;
     for (unsigned int i = 0; i < nth; ++i)
     {
-        append(globalRawBreakpoints, separatedBreakpoints[i]);
-        std::cout<< i << ":" << length(separatedBreakpoints[i]) << std::endl;
+        _insertBreakpoints(globalRawBreakpoints, globalBreakends, separatedBreakpoints[i], msplazerOptions, similarBPId);
+        //std::cout<< i << ":" << length(separatedBreakpoints[i]) << std::endl;
     }
     std::cout<< "merged global breakpoints (raw) :" << length(globalRawBreakpoints) << std::endl;
 
     // refine breakpoints
-    unsigned int similarBPId = 0;
+    similarBPId = 0;
     for (unsigned int i = 0; i < length(globalRawBreakpoints); ++i)
     {
         if (globalRawBreakpoints[i].support >= msplazerOptions.support)
@@ -284,62 +298,9 @@ int msplazer(StellarOptions & stellarOptions, MSplazerOptions & msplazerOptions)
     for (unsigned int i = 0; i < nth; ++i)
     {
         append(globalBreakpoints, separatedBreakends[i]);
-        std::cout<< i << ":" << length(separatedBreakends[i]) << std::endl;
+        //std::cout<< i << ":" << length(separatedBreakends[i]) << std::endl;
     }
     std::cout<< "merged global breakpoints (merged) :" << length(globalBreakpoints) << std::endl;
-    std::cout << "...done... " << (sysTime() - startGraphs) << "s"  << std::endl;
-
-    /* 
-    std::cout << "Constructing graphs... ";
-    // TODO distinguish call with queryIDs and shortQueryIDs for mate pairs?
-    double startGraphs = sysTime();
-    std::cout << "Building graphs... ";
-    //_chainQueryMatches(stellarMatches, distanceScores, queryChains, queryIDs, queries, readJoinPositions, msplazerOptions);
-    std::cout << "...done... " << (sysTime() - startGraphs) << "s"  << std::endl;
-    */
-
-    // ///////////////////////////////////////////////////////////////////////
-    // Analyze chains
-
-    double startAnalysis = sysTime();
-    std::cout << "Analyzing graphs... ";
-    //_analyzeChains(queryChains);
-    std::cout << "...done... " << (sysTime() - startAnalysis) << "s" << std::endl;
-
-    // ///////////////////////////////////////////////////////////////////////
-    // Breakpoints
-
-    // String<TBreakpoint> globalStellarIndels;
-    double startBP = sysTime();
-    std::cout << "Extracting breakpoints... ";
-    //_findAllBestChains(queryChains, stellarMatches, globalBreakpoints, msplazerOptions);
-    std::cout << "...done... " << (sysTime() - startBP) << "s" << std::endl;
-    // _findAllBestChains(queryChains, stellarMatches, queries, queryIDs, globalBreakpoints, globalStellarIndels, msplazerOptions);
-    // _findAllChains(queryChains, stellarMatches, queries, queryIDs, globalBreakpoints, globalStellarIndels, msplazerOptions);
-    // _findAllChains(queryChains);
-    
-
-    // Graph statistics output
-    /*
-    for(unsigned i = 0; i < length(queryChains); ++i)
-        if(!queryChains[i].isEmpty)
-            _findPartialChains(queryChains[i]);
-
-    for(unsigned i = 0; i < length(queryChains); ++i){
-        if(!queryChains[i].isEmpty && !queryChains[i].isPartial)
-            ++chainCount[length(stellarMatches[i].matches)];
-        else if(queryChains[i].isPartial)
-            ++partialChainCount[length(stellarMatches[i].matches)];
-    }
-
-    for(unsigned i = 0; i < length(chainCount); ++ i){
-        std::cout << "Number of complete chains for matches " << i << " : " << chainCount[i] << std::endl;
-    }
-    for(unsigned i = 0; i < length(partialChainCount); ++ i){
-        std::cout << "Number of partial chains for matches " << i << " : " << partialChainCount[i] << std::endl;
-    }
-    */
-
 
     // std sort in ascending order
     double startWriting = sysTime();
@@ -349,18 +310,10 @@ int msplazer(StellarOptions & stellarOptions, MSplazerOptions & msplazerOptions)
     _writeGlobalBreakpoints(globalBreakpoints, msplazerOptions, Gff());
     _writeGlobalBreakpoints(globalBreakpoints, databases, databaseIDs, msplazerOptions, Vcf());
     std::cout << "...done " << (sysTime() - startWriting) << "s" << std::endl;
-    // _writeGlobalBreakpoints(globalStellarIndels, msplazerOptions, msplazerOptions.support);
 
-    // ///////////////////////////////////////////////////////////////////////
-    // SAM Output
-
-    // SAM out of Stellar matches
-    // String <char> samOutfile = toString(msplazerOptions.outDir) + toString(msplazerOptions.samOutFile);//"example/chr19.sam";
-    // _writeSamFile(toCString(samOutfile), stellarMatches, databases, databaseIDs, queryIDs);
-    // std::cerr << " completed sam " << std::endl;
-
-
-
+    process_mem_usage(vm, rss);
+    std::cout << "Memory usage (after postprocessing) : " << vm << "," << rss << std::endl;
+ 
     // ///////////////////////////////////////////////////////////////////////
     // Write dot files
     //
