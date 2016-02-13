@@ -48,6 +48,45 @@
 using namespace seqan;
 
 // /////////////////////////////////////////////////////////////////////////////
+// For benchmark
+void process_mem_usage(double& vm_usage, double& resident_set)
+{
+    using std::ios_base;
+    using std::ifstream;
+    using std::string;
+
+    vm_usage     = 0.0;
+    resident_set = 0.0;
+
+    // 'file' stat seems to give the most reliable results
+    //
+    ifstream stat_stream("/proc/self/stat",ios_base::in);
+
+    // dummy vars for leading entries in stat that we don't care about
+    //
+    string pid, comm, state, ppid, pgrp, session, tty_nr;
+    string tpgid, flags, minflt, cminflt, majflt, cmajflt;
+    string utime, stime, cutime, cstime, priority, nice;
+    string O, itrealvalue, starttime;
+
+    // the two fields we want
+    //
+    unsigned long vsize;
+    long rss;
+
+    stat_stream >> pid >> comm >> state >> ppid >> pgrp >> session >> tty_nr
+                >> tpgid >> flags >> minflt >> cminflt >> majflt >> cmajflt
+                >> utime >> stime >> cutime >> cstime >> priority >> nice
+                >> O >> itrealvalue >> starttime >> vsize >> rss; // don't care about the rest
+
+    stat_stream.close();
+
+    long page_size_kb = sysconf(_SC_PAGE_SIZE) / 1024; // in case x86-64 is configured to use 2MB pages
+    vm_usage     = vsize / 1024.0;
+    resident_set = rss * page_size_kb;
+}
+
+// /////////////////////////////////////////////////////////////////////////////
 // MSplazer Wrapper
 int msplazer(StellarOptions & stellarOptions, MSplazerOptions & msplazerOptions)
 {
@@ -159,6 +198,10 @@ int msplazer(StellarOptions & stellarOptions, MSplazerOptions & msplazerOptions)
         std::cout << "done" << std::endl;
         std::cout << "TIME importing stellar matches " <<   (sysTime() - startST) << "s" << std::endl;
     }
+    double vm, rss;
+    process_mem_usage(vm, rss);
+    std::cout << "Memory usage (after input file loading) : " << vm << "," << rss << std::endl;
+
     /*
     for(unsigned i = 0; i < length(queries); ++i){
         for(unsigned j = 0; j < length(stellarMatches[i].matches); ++j)
@@ -223,6 +266,9 @@ int msplazer(StellarOptions & stellarOptions, MSplazerOptions & msplazerOptions)
     typedef MSplazerChain<TGraph, TVertexDescriptor, TScoreAlloc, TSparsePropertyMap, TMatchAlloc> TMSplazerChain;
     String<TMSplazerChain> queryChains;
 
+    std::cout << "Analyze with " << 1 << " Threads : Start" << std::endl;
+    double startTime = sysTime();
+
     std::cout << "Constructing graphs... ";
     // TODO distinguish call with queryIDs and shortQueryIDs for mate pairs?
     double startGraphs = sysTime();
@@ -272,8 +318,11 @@ int msplazer(StellarOptions & stellarOptions, MSplazerOptions & msplazerOptions)
         std::cout << "Number of partial chains for matches " << i << " : " << partialChainCount[i] << std::endl;
     }
     */
+    std::cout << "Analyze with " << 1 << " Threads : End(" << (sysTime() - startTime) << "s)" << std::endl;
+    process_mem_usage(vm, rss);
+    std::cout << "Memory usage (before postprocessing) : " << vm << "," << rss << std::endl;
 
-
+    std::cout << "Postprocessing : Start" << std::endl;
     // std sort in ascending order
     double startWriting = sysTime();
     std::cout << "Sorting and writing breakpoints... ";
@@ -282,6 +331,10 @@ int msplazer(StellarOptions & stellarOptions, MSplazerOptions & msplazerOptions)
     _writeGlobalBreakpoints(globalBreakpoints, msplazerOptions, Gff());
     _writeGlobalBreakpoints(globalBreakpoints, databases, databaseIDs, msplazerOptions, Vcf());
     std::cout << "...done " << (sysTime() - startWriting) << "s" << std::endl;
+
+    process_mem_usage(vm, rss);
+    std::cout << "Memory usage (after postprocessing) : " << vm << "," << rss << std::endl;
+
     // _writeGlobalBreakpoints(globalStellarIndels, msplazerOptions, msplazerOptions.support);
 
     // ///////////////////////////////////////////////////////////////////////
